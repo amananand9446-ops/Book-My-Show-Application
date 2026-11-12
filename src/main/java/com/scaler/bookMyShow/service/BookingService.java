@@ -12,11 +12,11 @@ import com.scaler.bookMyShow.model.User;
 import com.scaler.bookMyShow.model.enums.ShowSeatStatus;
 import com.scaler.bookMyShow.model.enums.TicketStatus;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 
 @Service
@@ -38,11 +38,21 @@ public class BookingService {
         this.bookingRepository = bookingRepository;
     }
 
-    @Transactional(isolation = Isolation.SERIALIZABLE)
+    @Transactional
     public Booking bookTicket(
             int showId,
             int userId,
             List<Integer> showSeatIds) {
+
+        if (showSeatIds == null || showSeatIds.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "At least one seat must be selected.");
+        }
+
+        if (new HashSet<>(showSeatIds).size() != showSeatIds.size()) {
+            throw new IllegalArgumentException(
+                    "Duplicate seat IDs are not allowed.");
+        }
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() ->
@@ -54,40 +64,44 @@ public class BookingService {
                         new IllegalArgumentException(
                                 "Invalid show ID: " + showId));
 
-        // Validate every requested seat first.
-        List<ShowSeat> requestedSeats = new ArrayList<>();
+        // Acquire pessimistic write locks on all requested seats.
+        // The repository query orders them by ID.
+        List<ShowSeat> requestedSeats =
+                showSeatRepo.findAllByIdInWithLock(showSeatIds);
 
-        for (Integer seatId : showSeatIds) {
-            ShowSeat seat = showSeatRepo.findByIdForUpdate(seatId)
-                    .orElseThrow(() ->
-                            new IllegalArgumentException(
-                                    "Invalid show seat ID: " + seatId));
+        if (requestedSeats.size() != showSeatIds.size()) {
+            throw new IllegalArgumentException(
+                    "One or more requested seats do not exist.");
+        }
+
+        // Validate every locked seat before changing any seat.
+        for (ShowSeat seat : requestedSeats) {
 
             if (seat.getShow() == null
                     || seat.getShow().getId() != showId) {
                 throw new IllegalArgumentException(
                         "Seat does not belong to the requested show: "
-                                + seatId);
+                                + seat.getId());
             }
 
             if (seat.getStatus() != ShowSeatStatus.AVAILABLE) {
                 throw new IllegalStateException(
-                        "A requested seat is unavailable: " + seatId);
+                        "A requested seat is unavailable: "
+                                + seat.getId());
             }
-
-            requestedSeats.add(seat);
         }
 
-        // Block seats only after all validation succeeds.
         Date now = new Date();
 
+        // Block all seats after validation succeeds.
         for (ShowSeat seat : requestedSeats) {
             seat.setStatus(ShowSeatStatus.BLOCKED);
             seat.setBlockedAt(now);
-            showSeatRepo.save(seat);
         }
 
-        // Create a pending booking.
+        showSeatRepo.saveAll(requestedSeats);
+
+        // Create pending booking.
         Booking booking = new Booking();
         booking.setUser(user);
         booking.setShow(show);

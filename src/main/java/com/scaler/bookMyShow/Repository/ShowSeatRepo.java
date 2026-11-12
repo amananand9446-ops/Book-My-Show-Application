@@ -19,5 +19,11 @@ public interface ShowSeatRepo extends JpaRepository<ShowSeat, Integer> {
     @Query("SELECT s FROM ShowSeat s WHERE s.id = :seatId")
     Optional<ShowSeat> findByIdForUpdate(@Param("seatId") int seatId);
 
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT s FROM ShowSeat s WHERE s.id IN :seatIds ORDER BY s.id ASC")
+    List<ShowSeat> findAllByIdInWithLock(
+            @Param("seatIds") List<Integer> seatIds
+    );
+
     List<ShowSeat> findByShow_Id(int showId);
 }
